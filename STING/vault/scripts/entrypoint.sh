@@ -19,6 +19,20 @@ else
     echo "WARNING: Auto-init script not found, Vault may remain sealed"
 fi
 
+# Copy vault token to shared conf volume for config_loader to find
+echo "Copying vault token to shared config volume..."
+if [ -f /vault/persistent/.vault-init.json ]; then
+    cp /vault/persistent/.vault-init.json /app/conf/.vault-auto-init.json && \
+        chmod 600 /app/conf/.vault-auto-init.json && \
+        echo "✅ Vault token exported to /app/conf/.vault-auto-init.json"
+
+    # Create marker file to trigger env regeneration with real token
+    touch /app/conf/.vault-token-updated
+    echo "✅ Created marker for env regeneration"
+else
+    echo "⚠️  Vault init file not found at /vault/persistent/.vault-init.json"
+fi
+
 # Create a marker file to signal that Vault secrets need initialization
 # The utils container or installation script will pick this up
 echo "Checking for Vault secrets initialization..."

@@ -299,6 +299,10 @@ class ConfigurationManager:
         self.vault_url = os.getenv("VAULT_ADDR", "http://vault:8200")
         self.vault_token = os.environ.get('VAULT_TOKEN', 'dev-only-token')
         self.vault_token = os.environ.get('VAULT_TOKEN') or self.vault_token
+
+        # Always try to read vault token from file (even in bootstrap mode)
+        self._read_vault_token_from_file()
+
         self.client = self._init_vault_client() if self._should_init_vault() else None
         
         # Get STING domain
@@ -308,6 +312,36 @@ class ConfigurationManager:
         self.platform = self._detect_platform()
         self.docker_host_gateway = self._get_docker_host_gateway()
         logger.info(f"Platform detected: {self.platform}, Docker host gateway: {self.docker_host_gateway}")
+
+    def _read_vault_token_from_file(self):
+        """Read vault token from file without connecting to Vault"""
+        auto_init_file = os.path.join(self.config_dir, '.vault-auto-init.json')
+        token_file = os.path.join(self.config_dir, '.vault_token')
+
+        # Try auto-init file first (created by vault entrypoint)
+        if os.path.exists(auto_init_file):
+            try:
+                with open(auto_init_file, 'r') as f:
+                    vault_data = json.load(f)
+                    auto_token = vault_data.get('root_token')
+                    if auto_token:
+                        logger.info(f"Found vault token in {auto_init_file}")
+                        self.vault_token = auto_token
+                        return
+            except Exception as e:
+                logger.warning(f"Could not read auto-init token: {e}")
+
+        # Fall back to .vault_token file
+        if os.path.exists(token_file):
+            try:
+                with open(token_file, 'r') as f:
+                    self.vault_token = f.read().strip()
+                    logger.info(f"Found vault token in {token_file}")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not read token file: {e}")
+
+        logger.debug(f"No vault token file found, using default: {self.vault_token}")
 
     def _should_init_vault(self) -> bool:
         mode_actions = {
@@ -729,7 +763,13 @@ class ConfigurationManager:
 
         # Generate STING service API key for inter-service authentication
         self.service_api_key = self._clean_value(self._get_secret('sting/service_auth', 'api_key', supertokens_safe=False))
-        
+
+        # Get Bee service API key for agentic operations
+        bee_api_secret = self._get_secret('service/bee-api-key', 'api_key')
+        self.bee_service_api_key = self._clean_value(bee_api_secret) if bee_api_secret else None
+        if not self.bee_service_api_key:
+            logger.warning("Bee service API key not found in Vault - run bootstrap to generate")
+
         # Get system domain configuration
         system_config = self.raw_config.get('system', {})
         domain = system_config.get('domain', 'localhost')
@@ -828,21 +868,29 @@ class ConfigurationManager:
         self.processed_config.update(st_db_vars)
 
         # Get HF token from environment, config.yml, or vault (env wins)
+        # NOTE: HuggingFace integration is deprecated - these operations are non-fatal
         hf_token = os.environ.get('HF_TOKEN', '')
         if not hf_token:
             hf_token = self.raw_config.get('llm_service', {}).get('huggingface', {}).get('token', '') or ''
         if not hf_token and self.client:
-            hf_token = self._get_secret('huggingface', 'token', False) or ''
+            try:
+                hf_token = self._get_secret('huggingface', 'token', False) or ''
+            except Exception as e:
+                logger.warning(f"Could not read deprecated HuggingFace token from Vault: {e}")
+                hf_token = ''
 
         # Store token in processed config
         self.processed_config['HF_TOKEN'] = hf_token
 
-        # Only store non-empty, non-placeholder tokens in Vault
+        # Only store non-empty, non-placeholder tokens in Vault (deprecated, non-fatal)
         if hf_token and self.client and hf_token != "<REDACTED>" and hf_token.strip():
-            self.client.secrets.kv.v2.create_or_update_secret(
-                path="sting/huggingface",
-                secret={"token": hf_token}
-            )
+            try:
+                self.client.secrets.kv.v2.create_or_update_secret(
+                    path="sting/huggingface",
+                    secret={"token": hf_token}
+                )
+            except Exception as e:
+                logger.warning(f"Could not store deprecated HuggingFace token in Vault: {e}")
 
         # Set environment variables
         for key, value in db_vars.items():
@@ -1860,6 +1908,7 @@ class ConfigurationManager:
                     'KNOWLEDGE_SERVICE_URL': 'http://knowledge:8090',
                     'KNOWLEDGE_ENABLED': 'true',
                     'STING_SERVICE_API_KEY': self.processed_config.get('STING_SERVICE_API_KEY', ''),
+                    'BEE_SERVICE_API_KEY': self.bee_service_api_key or '',  # Bee's service API key for agentic operations
                     # Conversation management settings
                     'BEE_CONVERSATION_MAX_TOKENS': str(self.raw_config.get('chatbot', {}).get('conversation', {}).get('max_tokens', 4096)),
                     'BEE_CONVERSATION_MAX_MESSAGES': str(self.raw_config.get('chatbot', {}).get('conversation', {}).get('max_messages', 50)),
@@ -1926,7 +1975,9 @@ class ConfigurationManager:
                     'LLM_MAX_RETRIES': '3',
                     'LLM_QUEUE_POLL_INTERVAL': '0.1',
                     'CORS_ORIGINS': 'https://localhost:3000,http://localhost:3000,https://localhost:3010,http://localhost:3010',
-                    'LOG_LEVEL': 'INFO'
+                    'LOG_LEVEL': 'INFO',
+                    'BEE_SERVICE_API_KEY': self.bee_service_api_key or '',  # Service API key for report generation
+                    'STING_API_URL': 'https://app:5050'  # For API calls back to main app
                 },
                 'observability.env': self._generate_observability_env_vars(),
                 'headscale.env': self._generate_headscale_env_vars(),

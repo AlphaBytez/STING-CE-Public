@@ -11,6 +11,9 @@ import json
 import tempfile
 import os
 from datetime import datetime
+from app.models.api_key_models import ApiKey
+from app.database import db
+from conf.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
@@ -246,11 +249,70 @@ def create_default_honey_jars():
                     
                     with open(jar_config_file, 'w') as f:
                         json.dump(config, f, indent=2)
-                        
+
                     logger.info(f"Updated system jar configuration: {system_jar_id}")
-                    
+
             except Exception as config_error:
                 logger.error(f"Error updating jar configuration: {config_error}")
+
+        # Generate Bee service API key for agentic operations
+        try:
+            # Check if Bee service key already exists
+            existing_key = ApiKey.query.filter_by(
+                user_id='bee-service',
+                name='Bee Service API Key'
+            ).first()
+
+            if not existing_key:
+                logger.info("Generating Bee service API key...")
+
+                # Define Bee service scopes
+                bee_scopes = [
+                    'reports:create',  # Generate reports on behalf of users
+                    'reports:read',    # Read reports (with user permission)
+                    'jars:read',       # Access knowledge jars
+                    'files:upload'     # Upload generated report files
+                ]
+
+                # Generate the API key
+                api_key, secret = ApiKey.generate_key(
+                    user_id='bee-service',
+                    user_email='bee@sting.local',
+                    name='Bee Service API Key',
+                    scopes=bee_scopes,
+                    permissions={
+                        'reports': ['create', 'read'],
+                        'jars': ['read', 'search'],
+                        'files': ['upload', 'read']
+                    },
+                    expires_in_days=None,  # Never expires
+                    description='Service API key for Bee agentic operations (report generation, knowledge access)'
+                )
+
+                # Store API key in database
+                db.session.add(api_key)
+                db.session.commit()
+
+                # Store secret in Vault for secure retrieval by services
+                try:
+                    vault = VaultManager()
+                    vault.write_secret('service/bee-api-key', {
+                        'api_key': secret,
+                        'key_id': api_key.key_id,
+                        'scopes': bee_scopes,
+                        'created_at': datetime.utcnow().isoformat()
+                    })
+                    logger.info(f"✅ Bee service API key generated and stored in Vault (key_id: {api_key.key_id})")
+                except Exception as vault_error:
+                    logger.error(f"Failed to store Bee API key in Vault: {vault_error}")
+                    # Don't fail bootstrap - key is still in database
+                    logger.warning("Bee service key created in database but not in Vault - services may need manual configuration")
+            else:
+                logger.info(f"Bee service API key already exists (key_id: {existing_key.key_id})")
+
+        except Exception as bee_key_error:
+            logger.error(f"Error generating Bee service API key: {bee_key_error}")
+            # Don't fail bootstrap for this - it can be created later
         
         return jsonify({
             'success': True,
