@@ -5,6 +5,10 @@ Proxy requests to the chatbot service
 
 from flask import Blueprint, request, jsonify, g
 from app.utils.decorators import require_auth_or_api_key
+from app.utils.complexity_detector import get_complexity_detector, QueryComplexity
+from app.services.report_service import get_report_service
+from app.utils.flexible_auth import get_current_user, get_user_role
+from datetime import datetime
 import requests
 import logging
 import os
@@ -85,7 +89,80 @@ def chat_with_bee():
             'user_id': context['user_id'],
             'require_auth': False  # Auth already validated by Flask decorator
         }
-        
+
+        # Phase 3: Complexity detection and routing
+        # Check if query is too complex for interactive chat
+        try:
+            complexity_detector = get_complexity_detector()
+            complexity, metadata = complexity_detector.detect_complexity(
+                user_message=message,
+                conversation_history=data.get('conversation_history'),
+                context=context
+            )
+
+            logger.info(
+                f"Complexity detection for user {context['user_id']}: "
+                f"{metadata['total_tokens']} tokens → {complexity.value}"
+            )
+
+            # If query is too large, return error with suggestion
+            if complexity == QueryComplexity.TOO_LARGE:
+                return jsonify({
+                    'error': 'QUERY_TOO_LARGE',
+                    'message': f"Your query is too large ({metadata['total_tokens']} tokens). "
+                               f"Please break it into smaller queries or reduce the context.",
+                    'metadata': metadata,
+                    'suggestion': 'Try rephrasing your question more concisely or split it into multiple queries.'
+                }), 413
+
+            # If query is complex, route to report generation
+            if complexity == QueryComplexity.COMPLEX:
+                logger.info(
+                    f"Routing complex query to report generation for user {context['user_id']} "
+                    f"({metadata['total_tokens']} tokens)"
+                )
+
+                report_service = get_report_service()
+                report_result = report_service.create_bee_service_report(
+                    user_id=context['user_id'],
+                    user_message=message,
+                    conversation_id=conversation_id,
+                    honey_jar_id=data.get('honey_jar_id'),
+                    context=context
+                )
+
+                if not report_result['success']:
+                    return jsonify({
+                        'error': 'REPORT_CREATION_FAILED',
+                        'message': 'Failed to create report for complex query',
+                        'details': report_result.get('error')
+                    }), 500
+
+                # Return report creation response
+                return jsonify({
+                    'response': f"🔍 Your query is quite complex and will be processed as a detailed report.\n\n"
+                                f"**Report ID:** {report_result['report_id']}\n"
+                                f"**Queue Position:** {report_result.get('queue_position', 'N/A')}\n"
+                                f"**Estimated Completion:** {report_result.get('estimated_completion', 'Soon')}\n\n"
+                                f"You'll be notified when your report is ready. You can view it in the Reports section.",
+                    'conversation_id': conversation_id,
+                    'report_generated': True,
+                    'report_metadata': {
+                        'report_id': report_result['report_id'],
+                        'complexity': complexity.value,
+                        'token_count': metadata['total_tokens'],
+                        'queue_position': report_result.get('queue_position'),
+                        'estimated_completion': report_result.get('estimated_completion')
+                    },
+                    'metadata': metadata,
+                    'bee_personality': 'professional_analyst',
+                    'timestamp': datetime.now().isoformat()
+                }), 200
+
+        except Exception as complexity_error:
+            # Log but don't block if complexity detection fails
+            logger.warning(f"Complexity detection failed: {complexity_error}, proceeding with interactive chat")
+
         # Try external AI service first (modern stack)
         try:
             # Determine user identifier for logging

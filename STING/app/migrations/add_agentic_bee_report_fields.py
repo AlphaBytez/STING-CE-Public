@@ -12,7 +12,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import db, init_app
+from app.database import db
 from flask import Flask
 import logging
 
@@ -23,18 +23,23 @@ def run_migration():
     """Add access control fields to reports table"""
     app = Flask(__name__)
 
-    # Configure database
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-        'DATABASE_URL',
-        'postgresql://postgres:postgres@localhost:5432/sting_app?sslmode=disable'
-    )
+    # Configure database (use postgres superuser for schema changes)
+    default_db_url = 'postgresql://postgres:postgres@localhost:5432/sting_app?sslmode=disable'
+    db_url = os.environ.get('DATABASE_URL', default_db_url)
+
+    # Replace app_user with postgres for migration
+    if 'app_user:' in db_url:
+        db_url = db_url.replace('app_user:app_secure_password_change_me', f'postgres:{os.environ.get("POSTGRES_PASSWORD", "postgres")}')
+        logger.info("Using postgres superuser for migration")
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     with app.app_context():
         db.init_app(app)
 
         try:
-            with db.engine.connect() as conn:
+            with db.engine.begin() as conn:
                 # Step 1: Create access_type enum if it doesn't exist
                 logger.info("Creating report_access_type enum...")
                 conn.execute("""
@@ -44,7 +49,6 @@ def run_migration():
                         WHEN duplicate_object THEN null;
                     END $$;
                 """)
-                conn.commit()
 
                 # Step 2: Check and add generated_by column
                 result = conn.execute("""
@@ -59,7 +63,6 @@ def run_migration():
                         ALTER TABLE reports
                         ADD COLUMN generated_by VARCHAR(255)
                     """)
-                    conn.commit()
 
                     # Set default value for existing records (user-generated)
                     logger.info("Setting default generated_by values for existing reports...")
@@ -68,7 +71,6 @@ def run_migration():
                         SET generated_by = user_id
                         WHERE generated_by IS NULL
                     """)
-                    conn.commit()
                 else:
                     logger.info("Column generated_by already exists, skipping...")
 
@@ -85,7 +87,6 @@ def run_migration():
                         ALTER TABLE reports
                         ADD COLUMN access_grants JSON DEFAULT '[]'
                     """)
-                    conn.commit()
                 else:
                     logger.info("Column access_grants already exists, skipping...")
 
@@ -102,7 +103,6 @@ def run_migration():
                         ALTER TABLE reports
                         ADD COLUMN access_type report_access_type DEFAULT 'user-owned'
                     """)
-                    conn.commit()
 
                     # Set default value for existing records (all user-owned)
                     logger.info("Setting default access_type values for existing reports...")
@@ -111,7 +111,6 @@ def run_migration():
                         SET access_type = 'user-owned'
                         WHERE access_type IS NULL
                     """)
-                    conn.commit()
                 else:
                     logger.info("Column access_type already exists, skipping...")
 
@@ -121,7 +120,6 @@ def run_migration():
                     CREATE INDEX IF NOT EXISTS idx_reports_generated_by
                     ON reports(generated_by)
                 """)
-                conn.commit()
 
                 # Step 6: Create index on access_type for performance
                 logger.info("Creating index on access_type...")
@@ -129,7 +127,6 @@ def run_migration():
                     CREATE INDEX IF NOT EXISTS idx_reports_access_type
                     ON reports(access_type)
                 """)
-                conn.commit()
 
                 logger.info("Migration completed successfully!")
                 logger.info("Access control fields added to reports table:")
@@ -145,17 +142,23 @@ def rollback_migration():
     """Rollback the migration (remove access control columns)"""
     app = Flask(__name__)
 
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-        'DATABASE_URL',
-        'postgresql://postgres:postgres@localhost:5432/sting_app?sslmode=disable'
-    )
+    # Configure database (use postgres superuser for schema changes)
+    default_db_url = 'postgresql://postgres:postgres@localhost:5432/sting_app?sslmode=disable'
+    db_url = os.environ.get('DATABASE_URL', default_db_url)
+
+    # Replace app_user with postgres for migration
+    if 'app_user:' in db_url:
+        db_url = db_url.replace('app_user:app_secure_password_change_me', f'postgres:{os.environ.get("POSTGRES_PASSWORD", "postgres")}')
+        logger.info("Using postgres superuser for rollback")
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     with app.app_context():
         db.init_app(app)
 
         try:
-            with db.engine.connect() as conn:
+            with db.engine.begin() as conn:
                 logger.info("Rolling back access control fields migration...")
 
                 # Drop indexes
@@ -170,7 +173,6 @@ def rollback_migration():
                 # Drop enum type
                 conn.execute("DROP TYPE IF EXISTS report_access_type")
 
-                conn.commit()
                 logger.info("Rollback completed successfully!")
 
         except Exception as e:

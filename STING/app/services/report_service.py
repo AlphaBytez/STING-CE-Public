@@ -411,7 +411,125 @@ class ReportService:
         except Exception as e:
             logger.error(f"Error getting queue stats: {e}")
             return {'error': str(e)}
-    
+
+    def create_bee_service_report(
+        self,
+        user_id: str,
+        user_message: str,
+        conversation_id: Optional[str] = None,
+        honey_jar_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a service-generated report for complex Bee queries.
+
+        This method is called when a user's query exceeds the interactive token threshold
+        and should be processed as an asynchronous report instead.
+
+        Args:
+            user_id: ID of the user requesting the report
+            user_message: The complex query from the user
+            conversation_id: Optional conversation ID for context
+            honey_jar_id: Optional honey jar ID to query against
+            context: Optional additional context
+
+        Returns:
+            Dict with report creation status and metadata
+        """
+        try:
+            with get_db_session() as session:
+                # Find or create a dynamic report template for Bee-generated reports
+                template = session.query(ReportTemplate).filter(
+                    ReportTemplate.name == 'bee_conversational_report'
+                ).first()
+
+                if not template:
+                    # Create template if it doesn't exist
+                    template = ReportTemplate(
+                        name='bee_conversational_report',
+                        display_name='Bee Conversational Report',
+                        description='Dynamic report generated from complex Bee chat queries',
+                        category='conversational',
+                        generator_class='BeeConversationalReportGenerator',
+                        parameters={},
+                        template_config={
+                            'supports_honey_jar': True,
+                            'supports_conversation_context': True
+                        },
+                        output_formats=['pdf', 'md', 'html'],
+                        estimated_time_minutes=10,
+                        requires_scrambling=True,
+                        is_active=True,
+                        created_by='bee-service'
+                    )
+                    session.add(template)
+                    session.flush()
+
+                # Generate report title from user message (first 100 chars)
+                title_preview = user_message[:100]
+                if len(user_message) > 100:
+                    title_preview += "..."
+
+                title = f"Bee Report: {title_preview}"
+
+                # Create the service-generated report
+                report = Report(
+                    template_id=template.id,
+                    user_id=user_id,
+                    title=title,
+                    description=f"Report generated from conversation {conversation_id or 'N/A'}",
+                    priority='normal',
+                    parameters={
+                        'user_query': user_message,
+                        'conversation_id': conversation_id,
+                        'generation_mode': 'conversational',
+                        'context': context or {}
+                    },
+                    output_format='pdf',
+                    honey_jar_id=honey_jar_id,
+                    scrambling_enabled=True,
+                    expires_at=datetime.utcnow() + timedelta(days=30),
+                    # Access control - service-generated
+                    generated_by='bee-service',
+                    access_type='service-generated',
+                    access_grants=[]  # User must grant themselves access (AAL2)
+                )
+
+                session.add(report)
+                session.commit()
+
+                # Queue the report for processing
+                queue_result = self.queue_report(report.id)
+
+                if not queue_result['success']:
+                    logger.error(f"Failed to queue Bee service report {report.id}")
+                    return {
+                        'success': False,
+                        'error': 'Failed to queue report for processing',
+                        'report_id': report.id
+                    }
+
+                logger.info(
+                    f"Created service-generated report {report.id} for user {user_id} "
+                    f"from complex query (conversation: {conversation_id})"
+                )
+
+                return {
+                    'success': True,
+                    'report_id': report.id,
+                    'report': report.to_dict(),
+                    'queue_position': queue_result.get('queue_position'),
+                    'estimated_completion': queue_result.get('estimated_completion'),
+                    'message': 'Your query is complex and will be processed as a report. You will be notified when it\'s ready.'
+                }
+
+        except Exception as e:
+            logger.error(f"Error creating Bee service report: {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': f'Failed to create report: {str(e)}'
+            }
+
     def health_check(self) -> bool:
         """Check if report service is healthy"""
         try:
