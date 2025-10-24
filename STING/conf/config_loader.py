@@ -720,7 +720,9 @@ class ConfigurationManager:
         self.db_password = self._clean_value(self._get_secret('database', 'password', supertokens_safe=False))
         # SuperTokens secrets removed - no longer used (Kratos handles auth)
         # self.api_key = self._clean_value(self._get_secret('supertokens', 'api_key', supertokens_safe=True))
+        self.api_key = None  # SuperTokens removed, set to None to prevent AttributeError
         # self.dashboard_api_key = self._clean_value(self._get_secret('supertokens', 'dashboard_api_key', supertokens_safe=True))
+        self.dashboard_api_key = None  # SuperTokens removed, set to None to prevent AttributeError
         
         # Generate Honey Reserve encryption master key
         self.honey_reserve_master_key = self._clean_value(self._get_secret('honey_reserve', 'master_key', supertokens_safe=False))
