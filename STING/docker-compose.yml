@@ -646,10 +646,10 @@ services:
       - curl
       - -f
       - http://localhost:8091/health
-      interval: 30s
+      interval: 45s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 6
+      start_period: 180s
     deploy:
       resources:
         limits:

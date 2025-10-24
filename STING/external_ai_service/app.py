@@ -9,6 +9,7 @@ import logging
 import asyncio
 import aiohttp
 import json
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
@@ -308,10 +309,26 @@ else:
 # Worker task handle
 worker_task = None
 
+# Global flag for indexing status (threading.Event for async-safe status)
+is_indexing = threading.Event()
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "external-ai", "timestamp": datetime.now().isoformat()}
+    """Health check endpoint that remains responsive during indexing"""
+    if is_indexing.is_set():
+        # During indexing, return a special status but still respond
+        return {
+            "status": "healthy",
+            "service": "external-ai",
+            "indexing": True,
+            "timestamp": datetime.now().isoformat()
+        }
+    return {
+        "status": "healthy",
+        "service": "external-ai",
+        "indexing": False,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/providers")
 async def get_providers():
@@ -766,6 +783,62 @@ async def cancel_request(request_id: str):
     else:
         raise HTTPException(status_code=404, detail="Request not found or already processing")
 
+@app.post("/admin/index-knowledge")
+async def trigger_indexing():
+    """Manually trigger knowledge indexing (admin endpoint)"""
+    try:
+        if not bee_context_manager.knowledge_indexer or not bee_context_manager.knowledge_indexer.enabled:
+            raise HTTPException(status_code=503, detail="ChromaDB not available")
+
+        # Get current stats
+        stats = bee_context_manager.knowledge_indexer.get_stats()
+        current_count = stats.get('document_count', 0)
+
+        # Clear existing collection
+        if current_count > 0:
+            logger.info(f"Clearing existing {current_count} documents...")
+            bee_context_manager.knowledge_indexer.clear_collection()
+
+        # Load brain knowledge
+        brain_knowledge = await bee_context_manager.load_brain_knowledge()
+
+        # Trigger background indexing
+        asyncio.create_task(index_knowledge_background(brain_knowledge))
+
+        return {
+            "status": "indexing_started",
+            "message": "Knowledge indexing started in background",
+            "previous_count": current_count,
+            "check_status_url": "/admin/index-status"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to trigger indexing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/index-status")
+async def get_index_status():
+    """Get current indexing status"""
+    try:
+        if not bee_context_manager.knowledge_indexer or not bee_context_manager.knowledge_indexer.enabled:
+            return {
+                "status": "disabled",
+                "message": "ChromaDB not available"
+            }
+
+        stats = bee_context_manager.knowledge_indexer.get_stats()
+
+        return {
+            "status": "active" if stats.get('document_count', 0) > 0 else "empty",
+            "document_count": stats.get('document_count', 0),
+            "collection_name": stats.get('collection_name'),
+            "semantic_search_enabled": stats.get('document_count', 0) > 0
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get index status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/knowledge/search")
 async def search_knowledge(request: Dict[str, Any]):
     """Search knowledge base"""
@@ -1016,14 +1089,69 @@ async def process_embedding_request(request: QueuedRequest) -> Dict[str, Any]:
         "dimensions": 384
     }
 
+async def index_knowledge_background(brain_knowledge: str):
+    """Background task to index knowledge in ChromaDB without blocking startup"""
+    try:
+        is_indexing.set()  # Mark indexing as in progress
+        logger.info("🔄 Background indexing started...")
+
+        # Delay to ensure service is fully started
+        await asyncio.sleep(5)
+
+        # Index brain knowledge with progress updates
+        if brain_knowledge:
+            logger.info(f"📖 Indexing brain knowledge ({len(brain_knowledge)} chars)...")
+            logger.info("⏳ This may take 30-60 seconds for embedding generation...")
+
+            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                bee_context_manager.knowledge_indexer.index_brain_knowledge,
+                brain_knowledge
+            )
+
+            if success:
+                logger.info("✅ Brain knowledge indexed successfully")
+            else:
+                logger.error("❌ Failed to index brain knowledge")
+
+            # Small delay between brain and docs indexing
+            await asyncio.sleep(2)
+
+        # Index documentation
+        from pathlib import Path
+        docs_path = Path(__file__).parent.parent / "docs"
+        if docs_path.exists():
+            logger.info("📚 Indexing documentation...")
+            loop = asyncio.get_event_loop()
+            success = await loop.run_in_executor(
+                None,
+                bee_context_manager.knowledge_indexer.index_documentation,
+                docs_path
+            )
+            if success:
+                logger.info("✅ Documentation indexed successfully")
+            else:
+                logger.warning("⚠️  Documentation indexing incomplete")
+
+        # Show final stats
+        stats = bee_context_manager.knowledge_indexer.get_stats()
+        logger.info(f"🎉 Indexing complete! {stats.get('document_count', 0)} document chunks indexed")
+
+    except Exception as e:
+        logger.error(f"Background indexing failed: {e}", exc_info=True)
+    finally:
+        is_indexing.clear()  # Clear indexing flag when done
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     global worker_task
-    
+
     # Initialize queue manager
     await queue_manager.initialize()
-    
+
     # Initialize Bee Context Manager and load brain knowledge
     logger.info("Loading Bee Brain knowledge into memory...")
     brain_knowledge = await bee_context_manager.load_brain_knowledge()
@@ -1031,10 +1159,25 @@ async def startup_event():
         logger.info(f"✅ Bee Brain loaded successfully: {len(brain_knowledge)} characters")
     else:
         logger.warning("⚠️ Bee Brain knowledge not loaded - using fallback mode")
-    
+
     # Start queue worker
     worker_task = asyncio.create_task(process_queue_worker())
-    
+
+    # ChromaDB semantic search - auto-index in background with batching
+    if bee_context_manager.knowledge_indexer and bee_context_manager.knowledge_indexer.enabled:
+        try:
+            stats = bee_context_manager.knowledge_indexer.get_stats()
+            doc_count = stats.get('document_count', 0)
+            logger.info(f"📊 ChromaDB status: {doc_count} document chunks indexed")
+
+            # Disabled auto-indexing for testing - use POST /admin/index-knowledge to index manually
+            if doc_count == 0:
+                logger.warning("📚 ChromaDB not indexed. Use POST /admin/index-knowledge to index manually.")
+            else:
+                logger.info(f"✅ ChromaDB already contains {doc_count} documents, semantic search enabled")
+        except Exception as e:
+            logger.warning(f"ChromaDB check failed: {e}. Using keyword fallback.")
+
     logger.info("External AI Service started successfully with Bee Brain system")
     
     # Check Ollama models on startup

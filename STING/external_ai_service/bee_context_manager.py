@@ -41,10 +41,20 @@ class BeeContextManager:
             logger.error(f"❌ Failed to initialize conversation cache: {e}")
             self.conversation_cache = None
 
+        # NEW: Initialize ChromaDB knowledge indexer for semantic search
+        try:
+            from knowledge_indexer import get_knowledge_indexer
+            self.knowledge_indexer = get_knowledge_indexer()
+            logger.info("✅ Knowledge indexer initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize knowledge indexer: {e}")
+            self.knowledge_indexer = None
+
         self.documentation_cache = {}
         self.honey_jar_cache = {}
         self.brain_knowledge = ""  # Core brain knowledge loaded in memory
         self.brain_loaded = False
+        self.use_semantic_search = True  # Use ChromaDB when available
         
     async def load_brain_knowledge(self) -> str:
         """Load Bee brain knowledge from the brain file into memory"""
@@ -172,22 +182,47 @@ class BeeContextManager:
             return []
     
     async def search_documentation(self, query: str, max_results: int = 3) -> List[Dict[str, str]]:
-        """Search documentation for relevant content"""
+        """Search documentation for relevant content using semantic search or keyword fallback"""
+
+        # Try semantic search first if available
+        if self.use_semantic_search and self.knowledge_indexer and self.knowledge_indexer.enabled:
+            try:
+                results = self.knowledge_indexer.search(
+                    query=query,
+                    n_results=max_results,
+                    filter_metadata={"type": "documentation"}
+                )
+                if results:
+                    scores = [f"{r['score']:.2f}" for r in results]
+                    logger.info(f"🔍 Found {len(results)} docs via semantic search (scores: {scores})")
+                    # Format for compatibility
+                    formatted_results = []
+                    for r in results:
+                        formatted_results.append({
+                            "source": r['metadata'].get('source', 'unknown'),
+                            "score": r['score'],
+                            "snippet": r['content'][:500]  # Truncate to 500 chars
+                        })
+                    return formatted_results
+            except Exception as e:
+                logger.warning(f"Semantic search failed, falling back to keyword search: {e}")
+
+        # Fallback to keyword search
         docs = await self.load_documentation()
         results = []
-        
-        # Simple keyword search - in production, would use embeddings
+
+        # Simple keyword search
         query_lower = query.lower()
         query_words = set(query_lower.split())
-        
+
         for doc_name, content in docs.items():
             content_lower = content.lower()
-            
+
             # Score based on keyword matches
             score = 0
             for word in query_words:
                 score += content_lower.count(word)
-            
+
             if score > 0:
                 # Extract relevant snippet
                 snippet = self._extract_snippet(content, query_words, max_length=500)
@@ -196,9 +231,10 @@ class BeeContextManager:
                     "score": score,
                     "snippet": snippet
                 })
-        
+
         # Sort by score and return top results
         results.sort(key=lambda x: x["score"], reverse=True)
+        logger.info(f"📚 Found {len(results[:max_results])} docs via keyword search")
         return results[:max_results]
     
     def _extract_snippet(self, content: str, query_words: set, max_length: int = 500) -> str:
@@ -236,7 +272,37 @@ class BeeContextManager:
         """Extract the most relevant sections from brain knowledge based on user query"""
         if not brain_knowledge:
             return ""
-            
+
+        # Try semantic search first if available
+        if self.use_semantic_search and self.knowledge_indexer and self.knowledge_indexer.enabled:
+            try:
+                results = self.knowledge_indexer.search(
+                    query=user_message,
+                    n_results=3,
+                    filter_metadata={"type": "knowledge"}
+                )
+                if results:
+                    # Combine top results
+                    context_parts = []
+                    total_len = 0
+                    for r in results:
+                        content = r['content']
+                        if total_len + len(content) > max_length:
+                            # Truncate if too long
+                            remaining = max_length - total_len
+                            if remaining > 100:  # Only add if meaningful
+                                context_parts.append(content[:remaining] + "...")
+                            break
+                        context_parts.append(content)
+                        total_len += len(content)
+
+                    if context_parts:
+                        logger.info(f"🧠 Found {len(context_parts)} brain sections via semantic search")
+                        return '\n\n'.join(context_parts)
+            except Exception as e:
+                logger.warning(f"Semantic brain search failed, falling back to keyword: {e}")
+
+        # Fallback to keyword-based extraction
         lines = brain_knowledge.split('\n')
         query_lower = user_message.lower()
         query_words = set(query_lower.split())
