@@ -585,13 +585,23 @@ Include relevant security considerations where applicable.
             }
         else:
             # Handle as regular conversation
-            # Use the BeeContextManager to build enhanced prompt with honey jar context if provided
+            # Use the BeeContextManager to build enhanced prompt with honey jar context AND conversation history
             enhanced_prompt = await bee_context_manager.build_enhanced_prompt(
                 request.message,
                 request.user_id,
-                conversation_history=None,  # Could pass history if available
+                conversation_id=request.conversation_id,  # Pass conversation_id to load history from Redis
+                conversation_history=None,  # Will be loaded from Redis automatically
                 honey_jar_id=request.honey_jar_id
             )
+
+            # Save user message to conversation history
+            if request.conversation_id:
+                await bee_context_manager.save_message_to_history(
+                    conversation_id=request.conversation_id,
+                    user_id=request.user_id,
+                    role="user",
+                    content=request.message
+                )
 
             # PII Protection: Serialize before sending to LLM
             pii_context = {}
@@ -638,9 +648,19 @@ Include relevant security considerations where applicable.
                     logger.error(f"PII deserialization failed: {e}")
                     # Continue with serialized response on error
 
+            # Save assistant response to conversation history
+            conversation_id = request.conversation_id or f"conv_{int(datetime.now().timestamp())}"
+            if conversation_id:
+                await bee_context_manager.save_message_to_history(
+                    conversation_id=conversation_id,
+                    user_id=request.user_id,
+                    role="assistant",
+                    content=clean_response.strip()
+                )
+
             return {
                 "response": clean_response.strip(),
-                "conversation_id": request.conversation_id or f"conv_{int(datetime.now().timestamp())}",
+                "conversation_id": conversation_id,
                 "timestamp": datetime.now().isoformat(),
                 "tools_used": request.tools_enabled,
                 "processing_time": result.get('total_duration', 0) / 1e9,

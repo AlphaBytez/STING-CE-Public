@@ -49,7 +49,7 @@ def proxy_external_ai(path):
             data=request.get_data(),
             params=request.args,
             allow_redirects=False,
-            timeout=30
+            timeout=90  # Increased for AI inference (models can take 30-60s)
         )
         
         # Create response with same status code and headers

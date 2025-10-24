@@ -32,6 +32,15 @@ class BeeContextManager:
             self.brain_path = Path(__file__).parent / "bee_brain_v2.0.0_phi4.md"
             self.use_versioned_brain = False
 
+        # NEW: Initialize conversation cache for memory
+        try:
+            from conversation_cache import get_conversation_cache
+            self.conversation_cache = get_conversation_cache()
+            logger.info("✅ Conversation cache initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize conversation cache: {e}")
+            self.conversation_cache = None
+
         self.documentation_cache = {}
         self.honey_jar_cache = {}
         self.brain_knowledge = ""  # Core brain knowledge loaded in memory
@@ -350,32 +359,55 @@ class BeeContextManager:
 4. **Be Specific**: Provide actionable, detailed information tailored to the user's needs"""
 
     async def build_enhanced_prompt(
-        self, 
-        user_message: str, 
+        self,
+        user_message: str,
         user_id: str,
+        conversation_id: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         honey_jar_id: Optional[str] = None
     ) -> str:
         """Build an enhanced prompt that preserves Bee's personality while adding context"""
-        
+
+        # PRIORITY 0: Load conversation history from Redis cache (NEW!)
+        if self.conversation_cache and conversation_id:
+            try:
+                cached_history = await self.conversation_cache.get_conversation_history(
+                    conversation_id,
+                    limit=10  # Last 10 messages for context
+                )
+                if cached_history:
+                    conversation_history = cached_history
+                    logger.info(f"📜 Loaded {len(cached_history)} messages from conversation cache")
+            except Exception as e:
+                logger.warning(f"Failed to load conversation history from cache: {e}")
+
         # PRIORITY 1: Load the actual Bee system prompt
         system_prompt = await self.load_bee_system_prompt()
-        
+
         # PRIORITY 2: Get honey jar context (user's knowledge, most relevant)
         honey_jar_results = await self.get_honey_jar_context(user_message, user_id, honey_jar_id)
-        
+
         # PRIORITY 3: Get relevant documentation (cached, secondary)
         doc_results = await self.search_documentation(user_message)
-        
+
         # PRIORITY 4: Brain knowledge (background context, least intrusive)
         brain_knowledge = await self.load_brain_knowledge()
         
         # Build context sections - keep them subtle and supportive
         context_parts = []
-        
-        # Add honey jar context first (user's personal knowledge)
+
+        # Add conversation history FIRST (most important for continuity)
+        if conversation_history and self.conversation_cache:
+            formatted_history = self.conversation_cache.format_history_for_prompt(
+                conversation_history,
+                max_tokens=2000  # Limit to ~2000 tokens
+            )
+            if formatted_history:
+                context_parts.append(formatted_history)
+
+        # Add honey jar context (user's personal knowledge)
         if honey_jar_results:
-            context_parts.append("## Relevant information from your honey jars:")
+            context_parts.append("\n## Relevant information from your honey jars:")
             for result in honey_jar_results[:2]:  # Limit to keep response focused
                 source = result.get('metadata', {}).get('source', 'honey jar')
                 content = result.get('content', '')[:300]  # Shorter snippets
@@ -398,7 +430,7 @@ class BeeContextManager:
         
         # Build the prompt using the actual system prompt, not a hard-coded override
         context_section = f"\n\n{chr(10).join(context_parts)}\n" if context_parts else ""
-        
+
         prompt = f"""{system_prompt}
 {context_section}
 User: {user_message}
@@ -406,6 +438,30 @@ User: {user_message}
 Bee: """
 
         return prompt
+
+    async def save_message_to_history(
+        self,
+        conversation_id: str,
+        user_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Save a message to conversation history"""
+        if not self.conversation_cache:
+            return False
+
+        try:
+            return await self.conversation_cache.add_message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role=role,
+                content=content,
+                metadata=metadata
+            )
+        except Exception as e:
+            logger.error(f"Failed to save message to history: {e}")
+            return False
     
     async def get_system_capabilities(self) -> Dict[str, Any]:
         """Get current system capabilities and features"""

@@ -39,6 +39,12 @@ def chat_with_bee():
         conversation_id = data.get('conversation_id')
         context = data.get('context', {})
 
+        # Generate conversation_id if not provided (for conversation history caching)
+        if not conversation_id:
+            import uuid
+            conversation_id = f"conv_{uuid.uuid4().hex[:12]}"
+            logger.info(f"Generated new conversation_id: {conversation_id}")
+
         # Add user information to context (handle both session and API key auth)
         if hasattr(g, 'api_key') and g.api_key:
             # API key authentication
@@ -178,7 +184,7 @@ def chat_with_bee():
                 f"{EXTERNAL_AI_SERVICE_URL}/bee/chat",
                 json=chat_request,
                 headers=auth_headers,
-                timeout=30
+                timeout=90  # Increased for AI inference (models can take 30-60s)
             )
 
             if response.status_code == 200:
@@ -198,7 +204,7 @@ def chat_with_bee():
             response = requests.post(
                 f"{CHATBOT_SERVICE_URL}/chat",
                 json=chat_request,
-                timeout=30
+                timeout=90  # Increased for AI inference (models can take 30-60s)
             )
             
             if response.status_code == 200:
