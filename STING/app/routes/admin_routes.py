@@ -709,7 +709,11 @@ def generate_demo_data():
                         parameters={'demo_scenario': scenario, 'demo_category': 'healthcare'},
                         output_format='pdf',
                         scrambling_enabled=True,
-                        expires_at=datetime.utcnow() + timedelta(days=30)
+                        expires_at=datetime.utcnow() + timedelta(days=30),
+                        # Access control
+                        generated_by=user_id,
+                        access_type='user-owned',
+                        access_grants=[]
                     )
 
                     session.add(report)

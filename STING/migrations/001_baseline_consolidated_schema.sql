@@ -70,6 +70,9 @@ CREATE TABLE reports (
     scrambling_mapping_id VARCHAR(255),
     risk_level VARCHAR(50) DEFAULT 'low',
     pii_detected BOOLEAN DEFAULT false,
+    generated_by VARCHAR(255),
+    access_grants JSONB DEFAULT '[]'::jsonb,
+    access_type report_access_type DEFAULT 'user-owned',
     result_file_id VARCHAR(255),
     result_size_bytes INTEGER,
     download_count INTEGER DEFAULT 0,
@@ -150,6 +153,12 @@ END $$;
 
 DO $$ BEGIN
     CREATE TYPE report_priority AS ENUM ('low', 'normal', 'high', 'urgent');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE report_access_type AS ENUM ('user-owned', 'service-generated');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;

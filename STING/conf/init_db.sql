@@ -95,6 +95,7 @@ CREATE TYPE user_role AS ENUM ('user', 'admin', 'super_admin');
 CREATE TYPE user_status AS ENUM ('active', 'inactive', 'pending', 'suspended');
 CREATE TYPE report_status AS ENUM ('queued', 'processing', 'completed', 'failed', 'cancelled');
 CREATE TYPE report_priority AS ENUM ('low', 'normal', 'high', 'urgent');
+CREATE TYPE report_access_type AS ENUM ('user-owned', 'service-generated');
 CREATE TYPE passkey_status AS ENUM ('ACTIVE', 'REVOKED', 'EXPIRED');
 
 -- =============================================
@@ -373,6 +374,9 @@ CREATE TABLE IF NOT EXISTS reports (
     scrambling_mapping_id VARCHAR(255),
     pii_detected BOOLEAN DEFAULT FALSE,
     risk_level VARCHAR(50),
+    generated_by VARCHAR(255),
+    access_grants JSONB DEFAULT '[]'::jsonb,
+    access_type report_access_type DEFAULT 'user-owned',
     result_file_id VARCHAR(255),
     result_summary JSONB DEFAULT '{}'::jsonb,
     result_size_bytes BIGINT,

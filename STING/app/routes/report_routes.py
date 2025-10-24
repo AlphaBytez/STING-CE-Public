@@ -318,7 +318,11 @@ def create_report():
                 output_format=data.get('output_format', 'pdf'),
                 honey_jar_id=data.get('honey_jar_id'),
                 scrambling_enabled=data.get('scrambling_enabled', template.requires_scrambling),
-                expires_at=datetime.utcnow() + timedelta(days=30)  # Reports expire after 30 days
+                expires_at=datetime.utcnow() + timedelta(days=30),  # Reports expire after 30 days
+                # Access control
+                generated_by=user_id,
+                access_type='user-owned',
+                access_grants=[]
             )
             
             session.add(report)
