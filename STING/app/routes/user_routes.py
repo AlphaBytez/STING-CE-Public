@@ -370,7 +370,8 @@ def get_system_jar_config():
     """Get STING CE system jar configuration for BeeChat defaults"""
     try:
         # Try to read the jar system configuration file
-        jar_config_path = os.path.expanduser("~/.sting-ce/jar_system.json")
+        # Use /app/conf which is mounted from ~/.sting-ce/conf on host
+        jar_config_path = "/app/conf/jar_system.json"
         
         if not os.path.exists(jar_config_path):
             logger.warning(f"Jar system config not found at {jar_config_path}")
@@ -400,7 +401,8 @@ def get_beechat_preferences():
     try:
         # For future enhancement: get user from auth middleware
         # For now, return system defaults for CE edition
-        jar_config_path = os.path.expanduser("~/.sting-ce/jar_system.json")
+        # Use /app/conf which is mounted from ~/.sting-ce/conf on host
+        jar_config_path = "/app/conf/jar_system.json"
         default_jar_id = None
         
         if os.path.exists(jar_config_path):

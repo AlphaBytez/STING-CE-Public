@@ -230,7 +230,8 @@ def create_default_honey_jars():
                         break
                 
                 if system_jar_id:
-                    jar_config_file = os.path.expanduser("~/.sting-ce/jar_system.json")
+                    # Use /app/conf which is mounted from ~/.sting-ce/conf on host
+                    jar_config_file = "/app/conf/jar_system.json"
                     os.makedirs(os.path.dirname(jar_config_file), exist_ok=True)
                     
                     config = {

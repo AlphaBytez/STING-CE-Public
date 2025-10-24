@@ -76,7 +76,7 @@ STING CE includes a strategic 3-jar knowledge management system optimized for th
 
 ### For Developers
 - **System Maintenance**: Scripts ensure system jar is always populated
-- **Configuration**: Jar IDs stored in `~/.sting-ce/jar_system.json`
+- **Configuration**: Jar IDs stored in `~/.sting-ce/conf/jar_system.json`
 - **Recovery**: `ensure_primary_honey_jar.py` can recreate the system if needed
 
 ## Maintenance Commands
@@ -102,7 +102,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/honey-jars
 ## Configuration Files
 
 ### System Configuration
-- **Location**: `~/.sting-ce/jar_system.json`
+- **Location**: `~/.sting-ce/conf/jar_system.json`
 - **Content**: Jar IDs and metadata
 - **Purpose**: System reference for jar management
 

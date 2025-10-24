@@ -458,7 +458,8 @@ def create_sting_ce_three_jar_system(session_token, knowledge_url):
         print(f"✅ Created workspace jar: {workspace_jar_id}")
     
     # Save jar IDs for system reference
-    jar_config_file = os.path.expanduser("~/.sting-ce/jar_system.json")
+    # This script runs on the host, so use the actual host path
+    jar_config_file = os.path.expanduser("~/.sting-ce/conf/jar_system.json")
     os.makedirs(os.path.dirname(jar_config_file), exist_ok=True)
     
     try:
