@@ -125,9 +125,9 @@ cd STING-CE-Public
 7. ✅ Create your admin account
 
 **After installation:**
-- **Frontend**: https://localhost:8443
-- **API**: https://localhost:5050
-- **Mailpit** (dev mode): http://localhost:8025
+- **Frontend**: https://sting.local:8443
+- **API**: https://sting.local:5050
+- **Mailpit** (dev mode): http://sting.local:8025
 
 ### Upgrading/Reinstalling
 
